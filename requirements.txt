@@ -1,0 +1,5 @@
+torch
+deepspeed
+tiktoken
+psutil
+datasets

@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Models & Checkpoints
+checkpoints/
+*.pt
+*.bin
+*.pth
+
+# Data & Metrics
+metrics_report.md
+data/
+
+# Environment
+.env
+
+# MacOS
+.DS_Store
