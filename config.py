@@ -16,7 +16,7 @@ class Config:
     warmup_steps: int = 500
     weight_decay: float = 0.01
     epochs: int = 1
-    steps_per_epoch: int = 5000
+    steps_per_epoch: int = 10000
     
     # DeepSpeed & Batching
     # These should match ds_config.json
@@ -26,7 +26,7 @@ class Config:
     # Logging & Checkpointing
     log_interval: int = 10
     tracker_interval: int = 100
-    checkpoint_interval: int = 1000
+    checkpoint_interval: int = 2500
     checkpoint_dir: str = "checkpoints"
 
     # Dataset
