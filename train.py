@@ -21,6 +21,9 @@ def main():
     # Initialize the custom Transformer model using centralized config
     config = Config()
     model = DecoderOnlyTransformer(config)
+    
+    # Optimization: Enable Gradient Checkpointing to save VRAM
+    model.gradient_checkpointing = True
 
     # Use standard PyTorch Adam optimizer to avoid FusedAdam CUDA requirement on Mac
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.max_lr, weight_decay=config.weight_decay)
@@ -34,6 +37,9 @@ def main():
         model_parameters=model.parameters(),
         config=ds_config_path
     )
+
+    # Mixed Precision Setup for MPS
+    autocast_device = 'mps' if torch.backends.mps.is_available() else 'cpu'
 
     def get_lr(it, config):
         # 1) linear warmup for warmup_steps steps
@@ -81,14 +87,20 @@ def main():
                 train_iter = iter(train_loader)
                 x, y = next(train_iter)
             
-            # Move data to the appropriate device (e.g., MPS, CUDA, or CPU)
+            # Move data to the appropriate device
             x, y = x.to(device), y.to(device)
             
-            # Forward pass
-            logits, loss = model_engine(x, targets=y)
+            # Forward pass with Automatic Mixed Precision (AMP)
+            # Optimized for Apple Silicon MPS
+            with torch.autocast(device_type=autocast_device, dtype=torch.float16):
+                logits, loss = model_engine(x, targets=y)
             
             # Backward pass 
             model_engine.backward(loss)
+            
+            # Manual Gradient Clipping for MPS stability
+            # (Bypassing DeepSpeed's distributed clipping which uses incompatible c10d operators)
+            torch.nn.utils.clip_grad_norm_(model_engine.parameters(), max_norm=1.0)
             
             # Optimizer step
             model_engine.step()

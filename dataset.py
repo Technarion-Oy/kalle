@@ -1,49 +1,47 @@
+import os
+import numpy as np
 import torch
-from torch.utils.data import IterableDataset, DataLoader
-import tiktoken
-from datasets import load_dataset
+from torch.utils.data import Dataset, DataLoader
 
-class StreamingTokenDataset(IterableDataset):
-    def __init__(self, seq_len: int, split="train", buffer_size=100):
+class MemmapDataset(Dataset):
+    def __init__(self, filename, seq_len):
         super().__init__()
+        self.filename = filename
         self.seq_len = seq_len
         
-        # Stream the TinyStories dataset to avoid large RAM footprint.
-        # This streams over network instead of downloading everything.
-        self.dataset = load_dataset("roneneldan/TinyStories", split=split, streaming=True)
+        # Open the raw binary file using memmap for O(1) RAM usage regardless of file size
+        self.data = np.memmap(filename, dtype=np.uint16, mode='r')
         
-        # Limit the shuffle buffer to prevent RAM bloat on local machine
-        self.dataset = self.dataset.shuffle(seed=42, buffer_size=buffer_size)
-        
-        # Use gpt2 tokenizer which has exactly 50257 vocab size, matching our ModelArgs
-        self.tokenizer = tiktoken.get_encoding("gpt2")
-        self.eot = self.tokenizer.eot_token
+        # Number of samples is total tokens divided by seq_len
+        # We use a simple indexing strategy: each sample is seq_len tokens
+        # and we slide by seq_len (non-overlapping for simplicity in this refactor)
+        self.n_samples = (len(self.data) - 1) // seq_len
 
-    def __iter__(self):
-        buffer = []
-        for item in self.dataset:
-            text = item["text"]
-            # Encode the story and add End-Of-Text token
-            tokens = self.tokenizer.encode(text, allowed_special="all")
-            buffer.extend(tokens)
-            buffer.append(self.eot)
-            
-            # Yield full sequences of size seq_len + 1 (for inputs and targets)
-            while len(buffer) >= self.seq_len + 1:
-                chunk = buffer[:self.seq_len + 1]
-                # Advance buffer by seq_len (predicting the next token across chunks seamlessly)
-                buffer = buffer[self.seq_len:] 
-                
-                # x: [token_0, ..., token_seq_len-1]
-                # y: [token_1, ..., token_seq_len]
-                x = torch.tensor(chunk[:-1], dtype=torch.long)
-                y = torch.tensor(chunk[1:], dtype=torch.long)
-                yield x, y
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        start_idx = idx * self.seq_len
+        end_idx = start_idx + self.seq_len + 1
+        
+        # Extract the chunk
+        chunk = self.data[start_idx:end_idx].astype(np.int64)
+        
+        x = torch.from_numpy(chunk[:-1])
+        y = torch.from_numpy(chunk[1:])
+        
+        return x, y
 
 def get_dataloader(batch_size: int, seq_len: int, split="train"):
-    """
-    Returns a PyTorch DataLoader that streams tokenized TinyStories chunks.
-    """
-    dataset = StreamingTokenDataset(seq_len=seq_len, split=split)
-    # num_workers=0 is ideal for basic streaming IterableDatasets without complex sharding logic
-    return DataLoader(dataset, batch_size=batch_size, num_workers=0)
+    filename = f"{split}.bin"
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"Binary file {filename} not found. Run prepare_data.py first.")
+        
+    dataset = MemmapDataset(filename, seq_len)
+    return DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=(split == "train"), 
+        num_workers=0, # memmap is thread-safe but works best in main process for simple scripts
+        pin_memory=False # MPS doesn't benefit from CPU-side pinning like CUDA
+    )
